@@ -1,4 +1,4 @@
-// ESM (package.json debe tener: "type": "module")
+// ESM (asegurate en package.json: { "type": "module" })
 import express from "express";
 import cors from "cors";
 import morgan from "morgan";
@@ -8,9 +8,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import Database from "better-sqlite3";
-// Si tu deploy falla con el subpath /sync, usa la línea de abajo y borra la de /sync:
-// import { stringify } from "csv-stringify";
-import { stringify } from "csv-stringify/sync";
+import { stringify } from "csv-stringify"; // versión stream (evita errores de /sync)
 import { nanoid } from "nanoid";
 
 dotenv.config();
@@ -18,7 +16,7 @@ const app = express();
 
 const PORT = process.env.PORT || 8787;
 
-// ===== CORS (origen sin barra final) =====
+// ===== Orígenes permitidos (SIN barra final) =====
 const rawOrigin = process.env.FRONTEND_ORIGIN || "http://localhost:5173";
 const FRONTEND_ORIGIN = rawOrigin.replace(/\/+$/, "");
 const ALLOWED_ORIGINS = [
@@ -27,20 +25,39 @@ const ALLOWED_ORIGINS = [
   "http://localhost:3000",
 ];
 
+// ===== 1) Normalizar // en URL (antes de CORS) =====
+app.use((req, _res, next) => {
+  if (req.url.includes("//")) req.url = req.url.replace(/\/{2,}/g, "/");
+  next();
+});
+
+// ===== 2) Responder preflight OPTIONS a mano (antes de CORS) =====
+app.use((req, res, next) => {
+  if (req.method !== "OPTIONS") return next();
+  const origin = req.headers.origin;
+  const allowed = !origin || ALLOWED_ORIGINS.includes(origin);
+  if (!allowed) return res.status(403).end();
+  res.header("Access-Control-Allow-Origin", origin || "*");
+  res.header("Vary", "Origin");
+  res.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+  res.header("Access-Control-Allow-Credentials", "true");
+  return res.status(204).end();
+});
+
+// ===== 3) CORS normal =====
 app.use(
   cors({
     origin: (origin, cb) => {
-      // Permitir tools sin Origin (curl/Postman) y chequear whitelist para navegador
-      if (!origin) return cb(null, true);
+      if (!origin) return cb(null, true); // curl / Postman / SSR
       const ok = ALLOWED_ORIGINS.includes(origin);
-      return cb(ok ? null : new Error("Not allowed by CORS"), ok);
+      return cb(null, ok); // no tiramos Error para evitar 502
     },
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
     credentials: true,
   })
 );
-app.options("*", cors()); // Preflight
 
 // ===== middleware =====
 app.use(morgan("dev"));
@@ -56,7 +73,6 @@ fs.mkdirSync(dataDir, { recursive: true });
 const dbPath = path.join(dataDir, "cdm.sqlite");
 const db = new Database(dbPath);
 
-// tablas
 db.exec(`
   PRAGMA journal_mode=WAL;
 
@@ -95,7 +111,6 @@ db.exec(`
   );
 `);
 
-// ===== auth minimal =====
 const DEMO_TOKEN = process.env.DEMO_TOKEN || "demo-admin-token";
 
 function requireAdmin(req, res, next) {
@@ -105,7 +120,6 @@ function requireAdmin(req, res, next) {
   return res.status(401).json({ error: "unauthorized" });
 }
 
-// ===== utils =====
 const toProductDto = (r) => ({
   id: r.id,
   name: r.name,
@@ -119,14 +133,10 @@ const toProductDto = (r) => ({
 });
 
 // ===== root + health =====
-app.get("/", (_req, res) => {
-  res.type("text/plain").send("cdm-backend: ok");
-});
-app.get("/health", (_req, res) => {
-  res.json({ ok: true, env: process.env.NODE_ENV || "dev" });
-});
+app.get("/", (_req, res) => res.type("text/plain").send("cdm-backend: ok"));
+app.get("/health", (_req, res) => res.json({ ok: true, env: process.env.NODE_ENV || "dev" }));
 
-// ===== auth endpoints =====
+// ===== auth =====
 app.post("/api/auth/login", (req, res) => {
   const { username } = req.body || {};
   return res.json({
@@ -134,7 +144,6 @@ app.post("/api/auth/login", (req, res) => {
     user: { name: username || "Admin", role: "admin" },
   });
 });
-
 app.get("/api/auth/me", (req, res) => {
   const auth = req.headers.authorization || "";
   const token = auth.replace(/^Bearer\s+/i, "");
@@ -142,19 +151,18 @@ app.get("/api/auth/me", (req, res) => {
   return res.json({ user: { name: "Admin", role: "admin" } });
 });
 
-// ===== products public =====
+// ===== products (public) =====
 app.get("/api/products", (_req, res) => {
   const rows = db.prepare("SELECT * FROM products ORDER BY created_at DESC").all();
   res.json(rows.map(toProductDto));
 });
-
 app.get("/api/product/:slug", (req, res) => {
   const r = db.prepare("SELECT * FROM products WHERE slug=?").get(req.params.slug);
   if (!r) return res.status(404).json({ error: "not found" });
   res.json(toProductDto(r));
 });
 
-// ===== products admin =====
+// ===== products (admin) =====
 app.post("/api/admin/products", requireAdmin, (req, res) => {
   const p = req.body || {};
   const id = nanoid();
@@ -178,7 +186,6 @@ app.post("/api/admin/products", requireAdmin, (req, res) => {
     res.status(400).json({ error: String(e) });
   }
 });
-
 app.put("/api/admin/products/:id", requireAdmin, (req, res) => {
   const p = req.body || {};
   try {
@@ -200,13 +207,12 @@ app.put("/api/admin/products/:id", requireAdmin, (req, res) => {
     res.status(400).json({ error: String(e) });
   }
 });
-
 app.delete("/api/admin/products/:id", requireAdmin, (req, res) => {
   db.prepare("DELETE FROM products WHERE id=?").run(req.params.id);
   res.json({ ok: true });
 });
 
-// ===== orders/admin reports =====
+// ===== orders / reports =====
 app.get("/api/admin/orders", requireAdmin, (_req, res) => {
   const orders = db.prepare("SELECT * FROM orders ORDER BY created_at DESC").all();
   const items = db
@@ -241,20 +247,12 @@ app.get("/api/admin/orders", requireAdmin, (_req, res) => {
   res.json(resp);
 });
 
-// ===== CSV export =====
-// Si /sync te diera error en deploy, cambia el import arriba y usa esta versión tipo stream:
-// app.get("/api/admin/orders/export", requireAdmin, (_req, res) => {
-//   const orders = db.prepare("SELECT * FROM orders ORDER BY created_at DESC").all();
-//   res.setHeader("Content-Type", "text/csv");
-//   res.setHeader("Content-Disposition", 'attachment; filename="orders.csv"');
-//   stringify(orders, { header: true }).pipe(res);
-// });
+// CSV (stream)
 app.get("/api/admin/orders/export", requireAdmin, (_req, res) => {
   const orders = db.prepare("SELECT * FROM orders ORDER BY created_at DESC").all();
-  const csv = stringify(orders, { header: true });
   res.setHeader("Content-Type", "text/csv");
   res.setHeader("Content-Disposition", 'attachment; filename="orders.csv"');
-  res.send(csv);
+  stringify(orders, { header: true }).pipe(res);
 });
 
 app.get("/api/admin/stats", requireAdmin, (_req, res) => {
@@ -275,18 +273,15 @@ app.get("/api/admin/stats", requireAdmin, (_req, res) => {
 // ===== checkout (demo) =====
 app.post("/api/checkout", (req, res) => {
   const payload = req.body || {};
-  const items = Array.isArray(payload.items) ? payload.items : []; // [{productId, quantity, priceCents}]
+  const items = Array.isArray(payload.items) ? payload.items : [];
+  if (!items.length) return res.status(400).json({ error: "items required" });
+
   const customer = payload.customer || "";
   const phone = payload.phone || "";
   const notes = payload.notes || "";
 
-  if (!items.length) return res.status(400).json({ error: "items required" });
-
-  // calcular total
   let total = 0;
-  for (const it of items) {
-    total += Number(it.priceCents || 0) * Number(it.quantity || 0);
-  }
+  for (const it of items) total += Number(it.priceCents || 0) * Number(it.quantity || 0);
 
   const orderId = nanoid();
   const code = orderId.slice(0, 8).toUpperCase();
@@ -304,21 +299,16 @@ app.post("/api/checkout", (req, res) => {
   }
 
   const redirectUrl = `${FRONTEND_ORIGIN}/order-success?code=${encodeURIComponent(code)}`;
-
-  if (String(req.query.redirect) === "1") {
-    return res.redirect(302, redirectUrl);
-  }
-
+  if (String(req.query.redirect) === "1") return res.redirect(302, redirectUrl);
   res.json({ ok: true, orderId, code, redirectUrl });
 });
 
-// ===== ejemplo de fallo/pago (demo) =====
 app.get("/api/checkout/failure", (_req, res) => {
   const redirectUrl = `${FRONTEND_ORIGIN}/order-failure`;
   res.redirect(302, redirectUrl);
 });
 
-// ===== seed mínima si no hay productos =====
+// ===== seed demo =====
 const count = db.prepare("SELECT COUNT(*) as c FROM products").get().c;
 if (!count) {
   const demo = [
