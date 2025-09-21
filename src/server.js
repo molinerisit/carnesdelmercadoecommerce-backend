@@ -8,6 +8,8 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import Database from "better-sqlite3";
+// Si tu deploy falla con el subpath /sync, usa la línea de abajo y borra la de /sync:
+// import { stringify } from "csv-stringify";
 import { stringify } from "csv-stringify/sync";
 import { nanoid } from "nanoid";
 
@@ -16,9 +18,9 @@ const app = express();
 
 const PORT = process.env.PORT || 8787;
 
-// ===== CORS =====
+// ===== CORS (origen sin barra final) =====
 const rawOrigin = process.env.FRONTEND_ORIGIN || "http://localhost:5173";
-const FRONTEND_ORIGIN = rawOrigin.replace(/\/+$/, ""); // sin "/" final
+const FRONTEND_ORIGIN = rawOrigin.replace(/\/+$/, "");
 const ALLOWED_ORIGINS = [
   FRONTEND_ORIGIN,
   "http://localhost:5173",
@@ -28,15 +30,17 @@ const ALLOWED_ORIGINS = [
 app.use(
   cors({
     origin: (origin, cb) => {
-      if (!origin) return cb(null, true); // curl/Postman
-      cb(null, ALLOWED_ORIGINS.includes(origin));
+      // Permitir tools sin Origin (curl/Postman) y chequear whitelist para navegador
+      if (!origin) return cb(null, true);
+      const ok = ALLOWED_ORIGINS.includes(origin);
+      return cb(ok ? null : new Error("Not allowed by CORS"), ok);
     },
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true,
   })
 );
-app.options("*", cors());
+app.options("*", cors()); // Preflight
 
 // ===== middleware =====
 app.use(morgan("dev"));
@@ -114,14 +118,16 @@ const toProductDto = (r) => ({
   createdAt: r.created_at,
 });
 
-// ===== health =====
+// ===== root + health =====
+app.get("/", (_req, res) => {
+  res.type("text/plain").send("cdm-backend: ok");
+});
 app.get("/health", (_req, res) => {
   res.json({ ok: true, env: process.env.NODE_ENV || "dev" });
 });
 
 // ===== auth endpoints =====
 app.post("/api/auth/login", (req, res) => {
-  // login "demo": cualquier payload que venga, devolvemos token demo para pruebas
   const { username } = req.body || {};
   return res.json({
     token: DEMO_TOKEN,
@@ -137,7 +143,7 @@ app.get("/api/auth/me", (req, res) => {
 });
 
 // ===== products public =====
-app.get("/api/products", (req, res) => {
+app.get("/api/products", (_req, res) => {
   const rows = db.prepare("SELECT * FROM products ORDER BY created_at DESC").all();
   res.json(rows.map(toProductDto));
 });
@@ -235,6 +241,14 @@ app.get("/api/admin/orders", requireAdmin, (_req, res) => {
   res.json(resp);
 });
 
+// ===== CSV export =====
+// Si /sync te diera error en deploy, cambia el import arriba y usa esta versión tipo stream:
+// app.get("/api/admin/orders/export", requireAdmin, (_req, res) => {
+//   const orders = db.prepare("SELECT * FROM orders ORDER BY created_at DESC").all();
+//   res.setHeader("Content-Type", "text/csv");
+//   res.setHeader("Content-Disposition", 'attachment; filename="orders.csv"');
+//   stringify(orders, { header: true }).pipe(res);
+// });
 app.get("/api/admin/orders/export", requireAdmin, (_req, res) => {
   const orders = db.prepare("SELECT * FROM orders ORDER BY created_at DESC").all();
   const csv = stringify(orders, { header: true });
@@ -291,7 +305,6 @@ app.post("/api/checkout", (req, res) => {
 
   const redirectUrl = `${FRONTEND_ORIGIN}/order-success?code=${encodeURIComponent(code)}`;
 
-  // si querés redirigir desde el backend (opcional): ?redirect=1
   if (String(req.query.redirect) === "1") {
     return res.redirect(302, redirectUrl);
   }
