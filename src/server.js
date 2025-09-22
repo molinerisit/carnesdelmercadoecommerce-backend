@@ -1,7 +1,3 @@
-import cookieParser from 'cookie-parser';
-import { corsMiddleware } from './config/cors.js';
-import compression from 'compression';
-import helmet from 'helmet';
 // ESM (asegurate en package.json: { "type": "module" })
 import express from "express";
 import cors from "cors";
@@ -18,26 +14,28 @@ import { nanoid } from "nanoid";
 dotenv.config();
 const app = express();
 
-// === Base middlewares (security, gzip, parsers, CORS) ===
-app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
-app.use(compression());
-app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: true }));
-app.use(cookieParser());
-app.set('trust proxy', 1);
-app.use(corsMiddleware());
-app.options('*', corsMiddleware());
-
 const PORT = process.env.PORT || 8787;
 
 // ===== Orígenes permitidos (SIN barra final) =====
 const rawOrigin = process.env.FRONTEND_ORIGIN || "http://localhost:5173";
 const FRONTEND_ORIGIN = rawOrigin.replace(/\/+$/, "");
 const ALLOWED_ORIGINS = [
+  // Permitir previews de Vercel (*.vercel.app)
+  /^https:\/\/([a-z0-9-]+\.)*vercel\.app$/i,
   FRONTEND_ORIGIN,
   "http://localhost:5173",
   "http://localhost:3000",
 ];
+
+function isAllowedOrigin(origin) {
+  if (!origin) return true; // curl/postman
+  for (const rule of ALLOWED_ORIGINS) {
+    if (typeof rule === "string" && rule === origin) return true;
+    if (rule instanceof RegExp && rule.test(origin)) return true;
+  }
+  return false;
+}
+
 
 // ===== 1) Normalizar // en URL (antes de CORS) =====
 app.use((req, _res, next) => {
@@ -49,7 +47,7 @@ app.use((req, _res, next) => {
 app.use((req, res, next) => {
   if (req.method !== "OPTIONS") return next();
   const origin = req.headers.origin;
-  const allowed = !origin || ALLOWED_ORIGINS.includes(origin);
+  const allowed = !origin || isAllowedOrigin(origin);
   if (!allowed) return res.status(403).end();
   res.header("Access-Control-Allow-Origin", origin || "*");
   res.header("Vary", "Origin");
@@ -64,7 +62,7 @@ app.use(
   cors({
     origin: (origin, cb) => {
       if (!origin) return cb(null, true); // curl / Postman / SSR
-      const ok = ALLOWED_ORIGINS.includes(origin);
+      const ok = isAllowedOrigin(origin);
       return cb(null, ok); // no tiramos Error para evitar 502
     },
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -166,6 +164,16 @@ app.get("/api/auth/me", (req, res) => {
 });
 
 // ===== products (public) =====
+
+
+// Producto por slug (público)
+app.get("/api/products/:slug", (req, res) => {
+  const { slug } = req.params;
+  const r = db.prepare("SELECT * FROM products WHERE slug = ?").get(slug);
+  if (!r) return res.status(404).json({ error: "not_found" });
+  return res.json(toProductDto(r));
+});
+
 app.get("/api/products", (_req, res) => {
   const rows = db.prepare("SELECT * FROM products ORDER BY created_at DESC").all();
   res.json(rows.map(toProductDto));
