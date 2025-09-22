@@ -1,6 +1,4 @@
-// Webhook de Mercado Pago
 import express from "express";
-import { updateByExternalReference } from "../services/orders.js";
 import { sendWhatsApp } from "../services/whatsapp.js";
 
 const router = express.Router();
@@ -8,8 +6,6 @@ const router = express.Router();
 router.post("/webhook", async (req, res) => {
   try {
     const db = req.app.get("db");
-    if (!db) return res.status(200).json({ ok: true }); // ACK
-
     const token = process.env.MP_ACCESS_TOKEN;
     const body = req.body || {};
     const id = body.data?.id || body.resource || req.query?.id || null;
@@ -24,7 +20,7 @@ router.post("/webhook", async (req, res) => {
     if (!pay || !pay.external_reference) return;
 
     const status = pay.status; // approved, pending, rejected, etc.
-    updateByExternalReference(db, pay.external_reference, String(id), status);
+    await db.updateByExternalReference(pay.external_reference, String(id), status);
 
     if (status === "approved") {
       await sendWhatsApp(`✅ Pago aprobado para orden #${pay.external_reference} (MP ${id}).`);

@@ -1,7 +1,5 @@
-// Checkout: crea orden + preferencia MP + WhatsApp
 import express from "express";
 import { sendWhatsApp } from "../services/whatsapp.js";
-import { initOrders, createOrder, attachPreference } from "../services/orders.js";
 
 const router = express.Router();
 
@@ -27,8 +25,7 @@ const addressOk = (a) => a && ["street","number","city","province","zip"].every(
 router.post("/checkout", async (req, res) => {
   try {
     const db = req.app.get("db");
-    if (!db) return res.status(500).json({ error: "db_not_available" });
-    initOrders(db);
+    await db.initOrders();
 
     const { email, items, delivery, customer } = req.body || {};
     if (!emailOk(email)) return res.status(400).json({ error: "email_required" });
@@ -41,7 +38,7 @@ router.post("/checkout", async (req, res) => {
     if (!token) return res.status(400).json({ error: "mp_token_missing" });
 
     const total = norm.reduce((a,i)=>a + i.unit_price * i.quantity, 0);
-    const orderId = createOrder(db, {
+    const orderId = await db.createOrder({
       email,
       customer,
       delivery: { mode, address: mode === "delivery" ? delivery.address : null },
@@ -79,7 +76,7 @@ router.post("/checkout", async (req, res) => {
     const data = await r.json().catch(() => ({}));
     if (!r.ok) return res.status(400).json({ error: "mp_error", details: data });
 
-    attachPreference(db, orderId, data.id, data.init_point || data.sandbox_init_point);
+    await db.attachPreference(orderId, data.id, data.init_point || data.sandbox_init_point);
 
     try {
       const a = preference.metadata?.delivery?.address;
