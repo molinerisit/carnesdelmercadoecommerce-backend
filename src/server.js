@@ -44,17 +44,19 @@ app.use((req, _res, next) => {
 });
 
 // ===== 2) Responder preflight OPTIONS a mano (antes de CORS) =====
+
+// Preflight OPTIONS (antes de cors())
 app.use((req, res, next) => {
   if (req.method !== "OPTIONS") return next();
   const origin = req.headers.origin;
-  const allowed = !origin || isAllowedOrigin(origin);
-  if (!allowed) return res.status(403).end();
-  res.header("Access-Control-Allow-Origin", origin || "*");
-  res.header("Vary", "Origin");
-  res.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
-  res.header("Access-Control-Allow-Credentials", "true");
-  return res.status(204).end();
+  if (!isAllowedOrigin(origin)) return res.sendStatus(403);
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization,X-Requested-With");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Max-Age", "600");
+  return res.sendStatus(204);
 });
 
 // ===== 3) CORS normal =====
@@ -73,7 +75,7 @@ app.use(
 
 // ===== middleware =====
 app.use(morgan("dev"));
-app.use(bodyParser.json({ limit: "2mb" }));
+app.use(bodyParser.json({ limit: "2mb", strict: false }));
 
 // ===== paths/helpers =====
 const __filename = fileURLToPath(import.meta.url);
@@ -350,4 +352,12 @@ if (!count) {
 app.listen(PORT, () => {
   console.log(`Backend listo en http://localhost:${PORT}`);
   console.log(`CORS allow: ${ALLOWED_ORIGINS.join(", ")}`);
+});
+
+// Manejo de JSON inválido
+app.use((err, req, res, next) => {
+  if (err && err.type === "entity.parse.failed") {
+    return res.status(400).json({ error: "invalid_json" });
+  }
+  next(err);
 });
