@@ -2,29 +2,17 @@
   "name": "cdm-backend",
   "version": "1.0.0",
   "type": "module",
-  "main": "src/server.js",
   "scripts": {
-    "dev": "node --watch src/server.js",
-    "start": "node src/server.js",
-    "db:migrate": "node scripts/run-sql.js sql/001_init.sql",
-    "db:seed": "node scripts/seed.js",
-    "db:setup": "npm run db:migrate && npm run db:seed"
-  },
-  "engines": {
-    "node": ">=18"
+    "start": "node src/server.js"
   },
   "dependencies": {
     "better-sqlite3": "^9.4.0",
     "body-parser": "^1.20.2",
+    "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",
-    "csv-stringify": "^6.5.2",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "mercadopago": "^2.3.7",
-    "morgan": "^1.10.0",
-    "nanoid": "^5.0.7",
-    "cookie-parser": "^1.4.6",
-    "helmet": "^7.1.0",
-    "compression": "^1.7.4"
+    "json2csv": "^6.0.0",
+    "jsonwebtoken": "^9.0.2"
   }
 }

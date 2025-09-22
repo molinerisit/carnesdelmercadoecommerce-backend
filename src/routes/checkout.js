@@ -1,5 +1,7 @@
-// src/routes/checkout.js
+// Checkout: crea orden + preferencia MP + WhatsApp
 import express from "express";
+import { sendWhatsApp } from "../services/whatsapp.js";
+import { initOrders, createOrder, attachPreference } from "../services/orders.js";
 
 const router = express.Router();
 
@@ -8,7 +10,6 @@ function toARSUnitPrice(i) {
   const cents = Number(i.unit_price_cents || 0);
   return Math.round(cents) / 100;
 }
-
 function normalizeItems(items) {
   return (items || []).map((i) => ({
     title: String(i.title || "Producto").slice(0, 256),
@@ -20,34 +21,50 @@ function normalizeItems(items) {
     description: i.description || undefined,
   })).filter(i => i.unit_price > 0);
 }
+const emailOk = (e) => !!(e && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e));
+const addressOk = (a) => a && ["street","number","city","province","zip"].every(k => String(a[k]||"").trim());
 
 router.post("/checkout", async (req, res) => {
   try {
-    const { email, items, meta } = req.body || {};
-    if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
-      return res.status(400).json({ error: "email_required" });
-    }
+    const db = req.app.get("db");
+    if (!db) return res.status(500).json({ error: "db_not_available" });
+    initOrders(db);
+
+    const { email, items, delivery, customer } = req.body || {};
+    if (!emailOk(email)) return res.status(400).json({ error: "email_required" });
     const norm = normalizeItems(items);
     if (!norm.length) return res.status(400).json({ error: "items_required" });
+    const mode = delivery?.mode || "delivery";
+    if (mode === "delivery" && !addressOk(delivery?.address)) return res.status(400).json({ error: "address_required" });
 
     const token = process.env.MP_ACCESS_TOKEN;
     if (!token) return res.status(400).json({ error: "mp_token_missing" });
 
-    const FRONTEND = (process.env.FRONTEND_ORIGIN || "http://localhost:5173").replace(/\/+$/, "");
+    const total = norm.reduce((a,i)=>a + i.unit_price * i.quantity, 0);
+    const orderId = createOrder(db, {
+      email,
+      customer,
+      delivery: { mode, address: mode === "delivery" ? delivery.address : null },
+      items: norm,
+      total
+    });
 
+    const FRONTEND = (process.env.FRONTEND_ORIGIN || "http://localhost:5173").replace(/\/+$/, "");
     const preference = {
-      payer: { email },
+      payer: { email, name: customer?.name || undefined },
       items: norm,
       back_urls: {
-        success: `${FRONTEND}/success`,
-        failure: `${FRONTEND}/failure`,
-        pending: `${FRONTEND}/pending`,
+        success: `${FRONTEND}/success?order=${orderId}`,
+        failure: `${FRONTEND}/failure?order=${orderId}`,
+        pending: `${FRONTEND}/pending?order=${orderId}`,
       },
+      external_reference: String(orderId),
       auto_return: "approved",
       statement_descriptor: "Carnes del Mercado",
-      external_reference: meta?.external_reference || undefined,
-      metadata: meta || undefined,
-      // notification_url: process.env.MP_WEBHOOK_URL || undefined,
+      metadata: {
+        delivery: { mode, address: mode === "delivery" ? delivery.address : null },
+        customer: { phone: customer?.phone, notes: customer?.notes }
+      },
     };
 
     const r = await fetch("https://api.mercadopago.com/checkout/preferences", {
@@ -59,14 +76,27 @@ router.post("/checkout", async (req, res) => {
       },
       body: JSON.stringify(preference),
     });
-
     const data = await r.json().catch(() => ({}));
-    if (!r.ok) {
-      return res.status(400).json({ error: "mp_error", details: data });
-    }
+    if (!r.ok) return res.status(400).json({ error: "mp_error", details: data });
 
-    // data.init_point es la URL de pago (prod) / sandbox_init_point para cuentas de prueba
-    return res.json({ id: data.id, init_point: data.init_point || data.sandbox_init_point });
+    attachPreference(db, orderId, data.id, data.init_point || data.sandbox_init_point);
+
+    try {
+      const a = preference.metadata?.delivery?.address;
+      const lines = [
+        "🧾 *Nuevo pedido*",
+        `#${orderId}`,
+        `Cliente: ${customer?.name || "-"} (${email}${customer?.phone ? " / " + customer.phone : ""})`,
+        `Entrega: ${mode === "delivery" ? "Envío a domicilio" : "Retiro en tienda"}`,
+        mode === "delivery" && a ? `Dirección: ${a.street} ${a.number}${a.floor? " piso "+a.floor:""}${a.apt? " dpto "+a.apt:""}, ${a.city}, ${a.province}, CP ${a.zip}` : null,
+        "Items:",
+        ...norm.map(i => `• ${i.title} x${i.quantity} — $${(i.unit_price*i.quantity).toFixed(2)}`),
+        `Total: $${total.toFixed(2)}`,
+      ].filter(Boolean);
+      await sendWhatsApp(lines.join("\n"));
+    } catch (e) { console.warn("WA notify failed:", e?.message || e); }
+
+    return res.json({ order_id: orderId, id: data.id, init_point: data.init_point || data.sandbox_init_point });
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: "server_error" });
