@@ -11,7 +11,7 @@
     "db:setup": "npm run db:migrate && npm run db:seed"
   },
   "engines": {
-    "node": ">=18.17"
+    "node": ">=18"
   },
   "dependencies": {
     "better-sqlite3": "^9.4.0",
