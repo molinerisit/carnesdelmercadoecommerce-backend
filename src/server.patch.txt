@@ -1,0 +1,3 @@
+// src/server.js (fragmento a insertar)
+import checkoutRouter from "./routes/checkout.js";
+app.use("/api", checkoutRouter);
